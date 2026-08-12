@@ -156,20 +156,21 @@ with tab2:
 # ==========================================
 with tab3:
     st.header("3️⃣ Validador AMTC 6 y Carga a Supabase")
-    st.markdown("Valida fechas contra la base AMTC 6 y sube los reportes limpios a la Base de Datos PostgreSQL, categorizados por semana.")
+    st.markdown("Valida fechas contra la base AMTC 6 y sube los reportes limpios a la Base de Datos PostgreSQL.")
     
-    # Input de la Llave de Consulta
+    # 1. Input de la llave relacional y consulta automática
     input_semana = st.text_input("🔑 Identificador de Semana (Ej. WK-26):", "WK-26").strip().upper()
     
-    # Botón para consultar BD
-    if st.button(f"🔍 Consultar registros existentes de {input_semana}"):
-        with st.spinner("Consultando Supabase..."):
-            res = supabase.table('mtc_southbound').select('CONTAINER, "PICK UP DATE", "TOTAL"').eq('SEMANA', input_semana).execute()
-            if len(res.data) > 0:
-                st.info(f"Se encontraron {len(res.data)} contenedores ya cargados en la {input_semana}.")
-                st.dataframe(pd.DataFrame(res.data))
-            else:
-                st.success(f"La {input_semana} está libre. No hay registros previos.")
+    # Consulta silenciosa a Supabase usando count='exact' para no descargar datos pesados, solo el número de filas
+    res = supabase.table('mtc_southbound').select('CONTAINER', count='exact').eq('SEMANA', input_semana).execute()
+    registros_existentes = res.count
+    
+    puede_subir = True
+    if registros_existentes > 0:
+        st.error(f"⚠️ ¡Alto ahí! Ya existen {registros_existentes} registros para la {input_semana} en la base de datos. Sincronización bloqueada para evitar duplicados.")
+        puede_subir = False
+    else:
+        st.success(f"✅ La {input_semana} está libre en Supabase. Lista para recibir datos.")
     
     st.divider()
     
@@ -179,9 +180,9 @@ with tab3:
     with col4:
         reporte_mod3 = st.file_uploader("Sube el Reporte Southbound", type=['xlsx'], key="mod3_target")
 
-    if base_mod3 and reporte_mod3:
-        with st.spinner('Cargando validaciones...'):
-            # Leer diccionario base
+    if base_mod3 and reporte_mod3 and puede_subir:
+        with st.spinner('Procesando datos y validando reglas de negocio...'):
+            # --- Lógica de diccionarios y cruce (Igual a la versión anterior) ---
             df_base = pd.read_excel(base_mod3, sheet_name='TJ-LB')
             base_dict = {}
             for index, row in df_base.iterrows():
@@ -194,7 +195,6 @@ with tab3:
                     'amtc_unload': clean_val(row.get('AMTC Unload Notification (Empty)'))
                 }
             
-            # Procesar archivo a subir
             df = pd.read_excel(reporte_mod3)
             if 'CONTAINER' not in [str(c).upper() for c in df.columns]:
                 df = pd.read_excel(reporte_mod3, header=4)
@@ -204,10 +204,6 @@ with tab3:
             df = df[df['CONTAINER'].str.len() == 11]
             df = df.map(clean_val)
             
-            # --- Lógica Visual de Discrepancias Omitida por simplicidad (mismo código que el anterior) ---
-            # ... (Aquí va la lógica de crear BD GATE OUT (Diff), etc. si quieres seguir viéndola) ...
-            
-            # Mapeo a SQL
             return_col_name = 'TERMINAL RETURN EMPTY' if 'TERMINAL RETURN EMPTY' in df.columns else 'RETURN EMPTY DATE'
             if return_col_name not in df.columns and 'TERMINAL EMPTY RETURN VALIDATION' in df.columns:
                  return_col_name = 'TERMINAL EMPTY RETURN VALIDATION'
@@ -223,24 +219,22 @@ with tab3:
             }
             
             df_sql = df.rename(columns=column_mapping)
-            
-            # Agregar la columna de SEMANA (nuestra Foreign/Grouping Key)
             df_sql['SEMANA'] = input_semana
             
-            st.markdown("#### Vista previa para Supabase:")
-            # Mostrar solo columnas que importan para DB
+            st.markdown("#### Vista previa de la Ingesta:")
             cols_to_show = [c for c in df_sql.columns if c in column_mapping.values() or c == 'SEMANA']
             st.dataframe(df_sql[cols_to_show].head())
             
-            if st.button(f"☁️ Subir info como {input_semana} a Supabase", type="primary"):
-                with st.spinner("Subiendo datos..."):
+            if st.button(f"☁️ Sincronizar {input_semana} con Supabase", type="primary"):
+                with st.spinner("Escribiendo en PostgreSQL..."):
                     df_upload = df_sql[cols_to_show].copy()
                     for col in df_upload.select_dtypes(include=['datetime64', 'datetimetz']).columns:
                          df_upload[col] = df_upload[col].dt.strftime('%Y-%m-%d %H:%M:%S')
                          
                     records = df_upload.where(pd.notnull(df_upload), None).to_dict(orient='records')
                     try:
-                        res = supabase.table('mtc_southbound').insert(records).execute()
-                        st.success(f"¡Éxito! {len(records)} registros guardados exitosamente bajo la llave {input_semana}.")
+                        supabase.table('mtc_southbound').insert(records).execute()
+                        st.success(f"¡Ingesta completada! {len(records)} registros guardados.")
+                        st.balloons()
                     except Exception as e:
-                        st.error(f"Error al subir: {e}")
+                        st.error(f"Fallo en la escritura a la base de datos: {e}")
