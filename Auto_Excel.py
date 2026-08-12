@@ -128,7 +128,7 @@ if report_files and base_dict:
             df['CONTAINER'] = df['CONTAINER'].astype(str).str.strip()
             df = df[df['CONTAINER'].str.len() == 11]
             
-            df = df.applymap(clean_val)
+            df = df.map(clean_val)
             
             # 2. Aplicar Lógica de Cruce y Discrepancias
             df['BD GATE OUT (Diff)'] = None
